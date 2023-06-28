@@ -1,6 +1,6 @@
 ## Зміст
 1. [Розділ 1](#r1)
-14. [Debug driver using WinDbg]()
+14. [Debug driver using WinDbg](windbg_dbg/)
 15. [Додатки](#extras)
 ______
 
