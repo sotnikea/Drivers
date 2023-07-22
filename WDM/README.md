@@ -4,9 +4,14 @@
 1. [Послідовність звернення ОС до підпрограми у драйвері (скорочено)](#r1)
 2. [Розташування об'єктів пристрою та драйверів у WDM](#r2)
 3. [Послідовність викликів функцій AddDevice у різних драйверах](#r3)
+4. [Базові структури даних](#r4)
+    - [Driver Objects](#r4_1)
+    - [Device Objects](#r4_2)
+5. [DriverEntry](#r5)
+19. [Додатки](#application)
+    - [Common Type Names for Kernel-Mode Drivers](#app_1)
 20. [Посилання](#references)
 ______
-
 
 ## <a name="r1">Послідовність звернення ОС до підпрограми у драйвері (скорочено)</a>
 
@@ -49,5 +54,130 @@ ______
 ![img3_1](https://github.com/sotnikea/Drivers_Learn/raw/main/WDM/images/order_of_AddDevice_calls.png)
 
 Таким чином, порядок викликів **AddDevice** визначає порядок об'єктів пристрою у стеку і, в кінцевому рахунку, порядок, в якому драйвери бачать IRP
+
+## <a name="r4">Базові структури даних</a>
+**Driver Objects** представляє сам драйвер і містить вказівники на всі підпрограми драйвера, які система буде викликати самостійно.    
+**Device objects** представляє екземпляр апаратного забезпечення та містить дані, що допомагають управляти цим екземпляром.
+### <a name="r4_1">Driver Objects</a>
+На малюнку представлена структура даних об'єкту драйвера    
+![img4_1_1](https://github.com/sotnikea/Drivers_Learn/raw/main/WDM/images/driver_object_data_structure.png)
+
+(Сірим кольором виділені поля структуру, доступ до яких заборонений (по аналогії з private полями))
+- **DeviceObject** (PDEVICE_OBJECT) - закріплює список структур даних пристроїв, одну для кожного з пристроїв, яким керує драйвер. Менеджер введення-виведення (I/O Manager) зв'язує об'єкти пристроїв між собою і підтримує це поле. Функція DriverUnload non-WDM драйвера використовуватиме це поле для проходження по списку об'єктів пристроїв з метою їх видалення. У WDM драйверів, ймовірно, немає особливої потреби використовувати це поле
+
+- **DriverExtension** (PDRIVER_EXTENSION) - вказує на невелику підструктуру, в межах якої для нас доступний лише член *AddDevice* (PDRIVER_ADD_DEVICE). *AddDevice* - це вказівник на функцію (досить важливу) в драйвері, яка створює об'єкти пристроїв
+
+- **HardwareDatabase** (PUNICODE_STRING) - описує рядок, який називає ключ реєстру бази даних обладнання для пристрою. Це назва, така як *\Registry\Machine\Hardware\Description\System*, і вказує на ключ реєстру, в якому зберігається інформація про розподіл ресурсів. Драйвери **WDM** не потребують доступу до інформації нижче цього ключа, оскільки менеджер "Plug and Play" автоматично здійснює розподіл ресурсів. Назва зберігається у форматі **Unicode**. (Фактично, усі дані рядків режиму ядра використовують Unicode.)
+
+- **FastIoDispatch** (PFAST_IO_DISPATCH) - вказує на таблицю вказівників функцій (більше детально про це можна прочитати в книзі Раджива Нагара "Windows NT File System Internals: A Developer's Guide" (O'Reilly & Associates, 1997))
+
+- **DriverStartIo** (PDRIVER_STARTIO) - вказує на функцію в нашому драйвері, яка обробляє запити введення-виведення, які були серіалізовані Менеджером введення-виведення (I/O Manager)
+
+- **DriverUnload** (PDRIVER_UNLOAD) - вказує на функцію очищення (cleanup) в нашому драйвері. Зазвичай розглядається у зв'язку з DriverEntry, але варто відзначити, що ймовірно WDM драйверу не потрібно буде виконувати суттєву очистку
+
+- **MajorFunction** (масив PDRIVER_DISPATCH) - є таблицею вказівників на функції в нашому драйвері, які обробляють приблизно двадцять типів запитів введення-виведення. Ця таблиця також є важливою, оскільки вона визначає, як запити введення-виведення потрапляють до нашого коду
+
+В коді (DDK headers) оголошення об'єктів драйвера зазвичай виглядає наступним чином
+~~~C
+typedef struct _DRIVER_OBJECT {
+ CSHORT Type;
+ CSHORT Size;
+ } DRIVER_OBJECT, *PDRIVER_OBJECT; 
+~~~
+де:
+- DRIVER_OBJECT - псевдонім структури, що буде використовуватись для оголошення її екземплярів
+- *PDRIVER_OBJECT - вказівник на структуру
+
+
+### <a name="r4_2">Device Objects</a>
+На малюнку представлена структура даних об'єкту пристрою    
+![img4_2_1](https://github.com/sotnikea/Drivers_Learn/raw/main/WDM/images/device_object_data_structure.png)
+
+(Сірим кольором виділені поля структуру, доступ до яких заборонений (по аналогії з private полями))
+
+- **DriverObject** (PDRIVER_OBJECT) - вказує на об'єкт, що описує драйвер, пов'язаний з цим об'єктом пристрою, зазвичай той, який викликав **IoCreateDevice** для його створення.
+
+- **NextDevice** (PDEVICE_OBJECT) - вказує на наступний об'єкт пристрою, який належить тому ж драйверу, що й цей. Це поле є ланкою, що зв'язує об'єкти пристроїв, починаючи зі змінної DeviceObject драйвера. Імовірно, драйверам **WDM** немає причини використовувати це поле. Це добре, оскільки правильне використання цього вказівника вимагає синхронізації з внутрішнім системним замком, який не публікується для доступу драйверами пристроїв
+
+- **CurrentIrp** (PIRP) використовується процедурами чергування **IRP** Microsoft - StartPacket та StartNextPacket, для запису останнього **IRP**, який був надісланий до нашої процедури **StartIo**. Драйвери **WDM** повинні реалізовувати свої власні черги **IRP** і можуть не використовувати це поле
+
+- **Flags** (ULONG) містить колекцію прапорців. В таблиці нижче перераховані прапорці, які доступні драйверам для запису та зчитування
+
+| Flag  | Description |
+| --------------- | -------- |
+| DO_BUFFERED_IO | Читання та записи використовують буферизований метод (системний буфер копіювання) для доступу до даних в режимі користувача |
+| DO_EXCLUSIVE | Тільки один потік одночасно може відкрити дескриптор (handle) |
+| DO_DIRECT_IO | Читання та записи використовують прямий метод (список дескрипторів пам'яті) для доступу до даних в режимі користувача |
+| DO_DEVICE_INITIALIZING | Об'єкт пристрою ще не ініціалізований |
+| DO_POWER_PAGABLE | Обробка IRP_MJ_PNP повинна відбуватися на PASSIVE_LEVEL |
+| DO_POWER_INRUSH | Пристрій потребує високої стартової потужності струму |
+
+- **Characteristics** (ULONG) - це ще одна збірка бітових прапорців (опис можна подивитись в таблиці нижче), які описують різні додаткові характеристики пристрою Менеджер введення/виведення (I/O Manager) ініціалізує ці прапорці на основі аргументу **IoCreateDevice**. Фільтрові драйвери передають деякі з них вверх по стеку пристроїв
+
+| Flag  | Description |
+| --------------- | -------- |
+| FILE_REMOVABLE_MEDIA | Медіа може бути вийнято з пристрою |
+| FILE_READ_ONLY_DEVICE | Медіа можна лише читати, не записувати |
+| FILE_FLOPPY_DISKETTE | Пристрій є дисководом гнучких дисків |
+| FILE_WRITE_ONCE_MEDIA | Медіа можна записати лише один раз |
+| FILE_REMOTE_DEVICE | Пристрій доступний через мережеве з'єднання |
+| FILE_DEVICE_IS_MOUNTED | Фізичне медіа присутнє в пристрої |
+| FILE_VIRTUAL_VOLUME | Це віртуальний том |
+| FILE_AUTOGENERATED_DEVICE_NAME | Менеджер введення/виведення (I/O Manager) повинен автоматично згенерувати ім'я для цього пристрою |
+| FILE_DEVICE_SECURE_OPEN | Примусова перевірка безпеки під час відкриття |
+
+- **DeviceExtension** (PVOID) вказує на структуру даних, яку ми визначаємо і яка буде містити інформацію про пристрій для кожного його екземпляра. Менеджер введення/виведення (I/O Manager) виділяє простір для цієї структури, але її назва та зміст повністю залежать від нас. Зазвичай використовують такий підхід: оголошують структуру з ім'ям типу **DEVICE_EXTENSION**. Щоб отримати до неї доступ за допомогою вказівника (наприклад, fdo) на об'єкт пристрою, можна використати такий оператор:
+~~~C
+PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION) fdo->DeviceExtension;
+~~~
+
+- **DeviceType** (DEVICE_TYPE) - це перелік констант, що описують тип пристрою. Менеджер введення/виведення (I/O Manager) ініціалізує цей член на основі аргументу, переданого у **IoCreateDevice**. Фільтрові драйвери можуть вважати за необхідне його інспектувати. Існує багато можливих значень для цього члена. Для отримання повного списку слід звернутися до документації DDK, розділ "Specifying Device Types" у бібліотеці MSDN
+
+- **StackSize** (CCHAR) - це лічильник кількості об'єктів пристрою, починаючи з поточного та знижуючись до PDO (Physical Device Object). Метою цього поля є надання інформації зацікавленим сторонам про те, скільки stack locations (записів стеку) слід створити для IRP (I/O Request Packet), який буде відправлено спочатку до драйвера цього пристрою. Зазвичай WDM драйверам не потрібно змінювати це значення, оскільки підтримувана функція для побудови стеку пристроїв (IoAttachDeviceToDeviceStack) робить це автоматично.
+
+- **AlignmentRequirement** (ULONG) - вказує обов'язкове вирівнювання для буферів даних, які використовуються у запитах на читання або запис до цього пристрою. WDM.H містить набір макросів, які варіюються від FILE_BYTE_ALIGNMENT та FILE_WORD_ALIGNMENT до FILE_512_BYTE_ALIGNMENT для визначення цих значень. Значення є степенем двійки мінус один. Наприклад, значення 0x3F представляє FILE_64_BYTE_ALIGNMENT.
+
+## <a name="r5">DriverEntry</a>
+Є деяка глобальна ініціалізація, яку драйвер повинен виконати лише один раз, коли він завантажується вперше. Відповідальність за цю глобальну ініціалізацію покладена на функцію DriverEntry
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## <a name="application">Додатки</a>
+### <a name="app_1">Common Type Names for Kernel-Mode Drivers</a>
+| Type Name | Description |
+| --------------- | -------- |
+|PVOID, PVOID64|Generic pointers (default precision and 64-bit precision) |
+| NTAPI | Used with service function declarations to force use of __stdcall calling convention on i86
+architectures |
+| VOID | Equivalent to “void” |
+| CHAR, PCHAR | 8-bit character, pointer to same (signed or not according to compiler default) |
+| UCHAR, PUCHAR | Unsigned 8-bit character, pointer to same |
+| SCHAR, PSCHAR | Signed 8-bit character, pointer to same |
+| SHORT, PSHORT | Signed 16-bit integer, pointer to same |
+| CSHORT | Signed short integer, used as a cardinal number |
+| USHORT, PUSHORT | Unsigned 16-bit integer, pointer to same |
+| LONG, PLONG | Signed 32-bit integer, pointer to same |
+| ULONG, PULONG | Unsigned 32-bit integer, pointer to same |
+| WCHAR, PWSTR, PWCHAR | Wide (Unicode) character or string |
+| PCWSTR | Pointer to constant Unicode string |
+| NTSTATUS | Status code (typed as signed long integer) |
+| LARGE_INTEGER | Signed 64-bit integer |
+| ULARGE_INTEGER | Unsigned 64-bit integer |
+| PSZ, PCSZ | Pointer to ASCIIZ (single-byte) string or constant string |
+| BOOLEAN, PBOOLEAN | TRUE or FALSE (equivalent to UCHAR)  |
 
 ## <a name="references">Посилання</a>
