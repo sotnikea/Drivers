@@ -8,6 +8,7 @@
     - [Driver Objects](#r4_1)
     - [Device Objects](#r4_2)
 5. [DriverEntry](#r5)
+6. [DriverUnload](#r6)
 19. [Додатки](#application)
     - [Common Type Names for Kernel-Mode Drivers](#app_1)
 20. [Посилання](#references)
@@ -138,23 +139,87 @@ PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION) fdo->DeviceExtension;
 - **AlignmentRequirement** (ULONG) - вказує обов'язкове вирівнювання для буферів даних, які використовуються у запитах на читання або запис до цього пристрою. WDM.H містить набір макросів, які варіюються від FILE_BYTE_ALIGNMENT та FILE_WORD_ALIGNMENT до FILE_512_BYTE_ALIGNMENT для визначення цих значень. Значення є степенем двійки мінус один. Наприклад, значення 0x3F представляє FILE_64_BYTE_ALIGNMENT.
 
 ## <a name="r5">DriverEntry</a>
-Є деяка глобальна ініціалізація, яку драйвер повинен виконати лише один раз, коли він завантажується вперше. Відповідальність за цю глобальну ініціалізацію покладена на функцію DriverEntry
+Є деяка глобальна ініціалізація, яку драйвер повинен виконати лише один раз, коли він завантажується вперше. Відповідальність за цю глобальну ініціалізацію покладена на функцію **DriverEntry** (фактично аналог main() або конструктора класу)
 
+Зазвичай **DriverEntry** має наступне оголошення:
+~~~C
+extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
+	IN PUNICODE_STRING RegistryPath)
+~~~
 
+- `extern "C"` - вказівка компілятору C++, що він повинен обробляти цю функцію як функцію C
+- `PDRIVER_OBJECT DriverObject`- вказівник на тільки що ініціалізований об'єкт нашого драйвера
+- `PUNICODE_STRING RegistryPath` - ім'я службового ключа в реєстрі
 
+Головним завданням драйвера *WDM* в **DriverEntry** є заповнення різних вказівників на функції в об'єкті драйвера. Ці вказівники вказують операційній системі, де знаходяться підпрограми, які ми вирішили розмістити в драйвері. Вони включають поля-вказівники об'єкта драйвера описані раніше [тут](#r4_1):
 
+- **DriverUnload** - зберігаємо сюди створену нами функцію очистки (cleanup). I/O Manager викличе цю функцію безпосередньо перед вивантаженням драйвера. Якщо немає необхідності в роботі з очисткою, все одно потрібно мати функцію DriverUnload, щоб система могла динамічно вивантажувати драйвер
 
+- **DriverExtension->AddDevice** - зберігаємо сюди вказівник на нашу функцію AddDevice. Менеджер PnP (Plug and Play) буде викликати AddDevice один раз для кожного екземпляра апаратного засобу, за який ми відповідаємо
 
+- **DriverStartIo** - Якщо драйвер використовує стандартний метод чергування запитів введення-виведення (I/O), то ми повинні встановити це поле об'єкта драйвера так, щоб воно вказувало на нашу функцію StartIo
 
+- **MajorFunction** - містить таблицю вказівників на функції в нашому драйвері, які обробляють певні типи IRP (I/O Request Packet). Нам необхідно обробляти щонайменше два види IRP та, ймовірно, деякі інші. Вказівники на відповідні їм функції нам треба задати
 
+Нижче наведено приклад коду DriverEntry
 
+~~~C
+extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject, IN PUNICODE_STRING RegistryPath)
+{
+    //Задаємо вказівники на фукнції, що мають виконуватись в заданих сценаріях роботи драйвера
+    DriverObject->DriverUnload = DriverUnload;
+    DriverObject->DriverExtension->AddDevice = AddDevice;
 
+    /*Кожен драйвер WDM повинен обробляти запити
+    * PNP (Plug and Play) -> IRP_MJ_PNP
+    * POWER (передача потужності) -> IRP_MJ_POWER
+    * SYSTEM_CONTROL (системний контроль) -> IRP_MJ_SYSTEM_CONTROL
+    *
+    * Тож для кожного з цих запитів ми маємо написати функцію, яка його
+    * буде обробляти. Власне вказівники на ці функції тут і мають 
+    * бути вказані
+    */
+    DriverObject->MajorFunction[IRP_MJ_PNP] = DispatchPnp;
+    DriverObject->MajorFunction[IRP_MJ_POWER] = DispatchPower;
+    DriverObject->MajorFunction[IRP_MJ_SYSTEM_CONTROL] = DispatchWmi;
 
+    // Скоріше за все перерахованих IRP буде недостатньо, та тут будуть якісь
+    // свої, специфічні для задачі нашого драйвера
+    // ...
 
+    //Якщо буде необхідно звертатись до ключа служб реєстру 
+    //в іншому місці нашого драйвера 
+    //хорошою ідеєю буде зробити копію строки RegistryPath тут
+    servkey.Buffer = (PWSTR) ExAllocatePool(PagedPool, RegistryPath->Length + sizeof(WCHAR));
 
+    if (!servkey.Buffer)
+        return STATUS_INSUFFICIENT_RESOURCES;
 
+    servkey.MaximumLength = RegistryPath->Length + sizeof(WCHAR);
+    RtlCopyUnicodeString(&servkey, RegistryPath);
+    servkey.Buffer[RegistryPath->Length/sizeof(WCHAR)] = 0;
+ 
+    // Повернення STATUS_SUCCESS вказує на успішне виконання операції
+    // Статуси обираються зі стандартного набору в NTSTATUS.H 
+    // або з набору кодів помилок, які визначені самостійно  
+    // STATUS_SUCCESS має числове значення 0
+    return STATUS_SUCCESS;
+}
+~~~
 
+## <a name="r6">DriverUnload</a>
+Метою функції DriverUnload у драйвері WDM є здійснення очищення після будь-якої глобальної ініціалізації, яку може здійснити функція **DriverEntry** (дуже схоже на деструктор у класі).
 
+Наприклад, якщо ми зробили копію рядка *RegistryPath* у функції **DriverEntry**, то **DriverUnload** буде місцем, де треба звільнити пам'ять, використану для копії цього рядка.
+
+~~~C
+VOID DriverUnload(PDRIVER_OBJECT DriverObject)
+{
+    RtlFreeUnicodeString(&servkey);
+}
+~~~
+
+Причому як і з звичайним деструктором класу, якщо **DriverEntry** не виконається до кінція та поверне помилку, **DriverUnload** викликатись не буде. Тож **DriverEntry** мусить самостійно подбати про звільнення виділеної пам'яті та інш.
 
 ## <a name="application">Додатки</a>
 ### <a name="app_1">Common Type Names for Kernel-Mode Drivers</a>
